@@ -1,22 +1,3 @@
-# main.py (Backend - FastAPI)
-# MixRefresh API: Upload + Latest + Meta + Files + File streaming + Player + PWA (/app)
-#
-# Features:
-# - POST /upload : accepts WAV + user_id + project_id + mode (version|overwrite)
-#   + accepts display_name + version_label to build pretty filenames:
-#     "Projektname_Version XX.wav" and "(latest)" suffix when overwrite
-# - GET /latest : streams latest wav for user/project
-# - GET /latest_meta : returns filename, created_at, audio_url
-# - GET /files : returns list of versions (name, created_at, audio_url) - newest first
-# - GET /file/{filename} : stream a specific wav by filename
-# - GET /player : simple HTML player
-# - GET /app : PWA app UI (latest + versions list)
-# - GET /manifest.webmanifest : PWA manifest
-# - GET / : redirect to /app
-#
-# Notes:
-# - Render free tier has non-persistent disk. Uploads may disappear after redeploy/restart.
-
 from __future__ import annotations
 
 import json
@@ -26,13 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
-from fastapi.responses import (
-    JSONResponse,
-    FileResponse,
-    HTMLResponse,
-    RedirectResponse,
-    Response,
-)
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, RedirectResponse, Response
 
 app = FastAPI()
 
@@ -40,29 +15,30 @@ UPLOAD_DIR = Path("cloud_uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 APP_NAME = "MixRefresh"
+
+
+# -----------------------
+# Helper functions
+# -----------------------
+def _safe_filename_part(s: str) -> str:
+    s = (s or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r'[\\/:*?"<>|]+', "", s)
+    return s
+
+
 def _display_from_internal_filename(filename: str) -> str:
     """
     Interner Dateiname:
       user__project__TIMESTAMP__Pretty.wav
       user__project__latest__Pretty.wav
-
-    Anzeige im UI:
+    Display für UI:
       Pretty.wav
     """
     parts = filename.split("__", 3)
     if len(parts) == 4:
         return parts[3]
     return filename
-
-def _safe_filename_part(s: str) -> str:
-    """
-    Make a user-provided string safe for filenames and URLs.
-    Keeps spaces (nice for readability) but strips illegal/suspicious characters.
-    """
-    s = (s or "").strip()
-    s = re.sub(r"\s+", " ", s)
-    s = re.sub(r'[\\/:*?"<>|]+', "", s)
-    return s
 
 
 def _find_latest_file(user_id: Optional[str] = None, project_id: Optional[str] = None) -> Optional[Path]:
@@ -85,6 +61,9 @@ def _find_latest_file(user_id: Optional[str] = None, project_id: Optional[str] =
     return files[0] if files else None
 
 
+# -----------------------
+# API routes
+# -----------------------
 @app.post("/upload")
 async def upload(
     file: UploadFile = File(...),
@@ -96,12 +75,14 @@ async def upload(
 ):
     """
     Upload a mix.
+
     mode=version   -> stores with timestamp (history)
-    mode=overwrite -> always overwrites a stable "latest" file for that project
-    Also receives display_name/version_label to build pretty filename:
+    mode=overwrite -> overwrites a stable "latest" file for that project
+
+    Also uses display_name/version_label to build a pretty name:
       Projektname_Version XX.wav
-      Projektname_Version XX (latest).wav
-    Internally we still prefix with user_id/project_id for filtering.
+      Projektname_Version XX (latest).wav   (for overwrite)
+    But keeps internal prefix user__project__... for filtering.
     """
     mode = (mode or "version").strip().lower()
     if mode not in ("version", "overwrite"):
@@ -127,12 +108,10 @@ async def upload(
     return JSONResponse(
         {
             "filename": dest.name,
-            "path": str(dest),
+            "display_name": _display_from_internal_filename(dest.name),
             "user_id": user_id,
             "project_id": project_id,
             "mode": mode,
-            "display_name": pretty_project,
-            "version_label": pretty_version,
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(dest.stat().st_mtime)),
         }
     )
@@ -140,13 +119,9 @@ async def upload(
 
 @app.get("/latest")
 def latest_file(user_id: Optional[str] = None, project_id: Optional[str] = None):
-    """
-    Streams the most recently modified WAV for user/project.
-    """
     latest = _find_latest_file(user_id=user_id, project_id=project_id)
     if not latest:
         raise HTTPException(status_code=404, detail="No files found")
-
     return FileResponse(latest, media_type="audio/wav", filename=latest.name)
 
 
@@ -169,28 +144,26 @@ def latest_meta(request: Request, user_id: Optional[str] = None, project_id: Opt
         audio_url += "?" + "&".join(params)
 
     display_name = _display_from_internal_filename(latest.name)
-    # Immer markieren, weil es ja "latest" ist
+    # Latest immer markieren (auch wenn mode=version war)
     if " (latest)" not in display_name:
-        display_name = display_name.replace(".wav", " (latest).wav") if display_name.lower().endswith(".wav") else f"{display_name} (latest)"
+        if display_name.lower().endswith(".wav"):
+            display_name = display_name[:-4] + " (latest).wav"
+        else:
+            display_name = display_name + " (latest)"
 
     return {
-        "filename": latest.name,            # intern (für Debug)
-        "display_name": display_name,       # fürs UI
+        "filename": latest.name,       # intern (Debug)
+        "display_name": display_name,  # fürs UI
         "created_at": created_at,
         "audio_url": audio_url,
     }
 
 
-
 @app.get("/file/{filename}")
 def get_file(filename: str):
-    """
-    Streams/Downloads a specific WAV from cloud_uploads by filename.
-    """
     path = UPLOAD_DIR / filename
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-
     return FileResponse(path, media_type="audio/wav", filename=path.name)
 
 
@@ -217,39 +190,54 @@ def list_files(request: Request, user_id: Optional[str] = None, project_id: Opti
     files = files[:limit]
 
     base_url = str(request.base_url).rstrip("/")
+
     out = []
     for idx, f in enumerate(files):
         created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(f.stat().st_mtime))
         display_name = _display_from_internal_filename(f.name)
 
-        is_latest = (idx == 0)
+        is_latest = idx == 0
         if is_latest and " (latest)" not in display_name:
-            display_name = display_name.replace(".wav", " (latest).wav") if display_name.lower().endswith(".wav") else f"{display_name} (latest)"
+            if display_name.lower().endswith(".wav"):
+                display_name = display_name[:-4] + " (latest).wav"
+            else:
+                display_name = display_name + " (latest)"
 
-        out.append({
-            "name": f.name,  # intern
-            "display_name": display_name,
-            "created_at": created_at,
-            "is_latest": is_latest,
-            "audio_url": f"{base_url}/file/{f.name}",
-        })
+        out.append(
+            {
+                "name": f.name,  # intern
+                "display_name": display_name,
+                "created_at": created_at,
+                "is_latest": is_latest,
+                "audio_url": f"{base_url}/file/{f.name}",
+            }
+        )
     return out
 
+
+@app.get("/projects")
+def list_projects(user_id: str = "justin"):
+    """
+    Liest aus den Dateinamen alle vorhandenen project_id für einen user_id.
+    """
+    projects = set()
+    for f in UPLOAD_DIR.glob("*.wav"):
+        parts = f.name.split("__")
+        if len(parts) >= 2 and parts[0] == user_id:
+            projects.add(parts[1])
+    return {"user_id": user_id, "projects": sorted(projects)}
 
 
 @app.get("/player", response_class=HTMLResponse)
 def player(user_id: str = "default_user", project_id: str = "default_project"):
-    """
-    Simple HTML player for latest.
-    """
     return f"""
     <html>
     <head><title>Mix Player</title></head>
-    <body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
-        <h2>Latest Mix for {user_id} / {project_id}</h2>
-        <audio controls style="width:90%">
-          <source src="/latest?user_id={user_id}&project_id={project_id}" type="audio/wav">
-        </audio>
+    <body style="font-family:sans-serif; text-align:center; padding-top:40px;">
+      <h2>Latest Mix for {user_id}/{project_id}</h2>
+      <audio controls style="width:90%">
+        <source src="/latest?user_id={user_id}&project_id={project_id}" type="audio/wav">
+      </audio>
     </body>
     </html>
     """
@@ -268,29 +256,12 @@ def manifest():
     }
     return Response(content=json.dumps(content), media_type="application/manifest+json")
 
-@app.get("/projects")
-def list_projects(user_id: str = "justin"):
-    """
-    Liest aus den Dateinamen alle vorhandenen project_id für einen user_id.
-    """
-    projects = set()
-    for f in UPLOAD_DIR.glob("*.wav"):
-        parts = f.name.split("__")
-        if len(parts) >= 2 and parts[0] == user_id:
-            projects.add(parts[1])
-    return {"user_id": user_id, "projects": sorted(projects)}
 
 @app.get("/app", response_class=HTMLResponse)
 def web_app():
-    """
-    PWA UI:
-    - shows latest_meta
-    - lists versions via /files
-    - plays selected version via <audio>
-    """
-    # Default-Projekt (später konfigurierbar)
+    # Default-User (später konfigurierbar)
     user_id = "justin"
-    project_id = "default"
+    default_project = "default"
 
     return f"""
 <!doctype html>
@@ -316,29 +287,37 @@ def web_app():
       background: #0b0b0f;
       color: #fff;
     }}
-
     .card {{
       width: 100%;
-      max-width: 520px;
+      max-width: 560px;
       background: #151521;
       border-radius: 18px;
       padding: 20px;
       box-shadow: 0 10px 30px rgba(0,0,0,.35);
     }}
-
-    h1 {{
-      margin: 0 0 6px 0;
-      font-size: 22px;
-    }}
-
+    h1 {{ margin: 0 0 6px 0; font-size: 22px; }}
     .meta {{
       opacity: .75;
       font-size: 13px;
-      margin-bottom: 14px;
+      margin-bottom: 10px;
       white-space: pre-wrap;
       word-break: break-word;
     }}
-
+    .section-title {{
+      margin-top: 14px;
+      margin-bottom: 6px;
+      font-size: 14px;
+      opacity: .7;
+    }}
+    select {{
+      width: 100%;
+      padding: 12px;
+      border-radius: 12px;
+      border: 0;
+      background: #2a2a3a;
+      color: white;
+      outline: none;
+    }}
     button {{
       width: 100%;
       border: 0;
@@ -350,40 +329,20 @@ def web_app():
       color: white;
       margin-top: 10px;
     }}
-
-    button.secondary {{
-      background: #2a2a3a;
-    }}
-
-    button:disabled {{
-      opacity: .6;
-    }}
-
-    audio {{
-      width: 100%;
-      margin-top: 14px;
-    }}
-
+    button.secondary {{ background: #2a2a3a; }}
+    button:disabled {{ opacity: .6; }}
+    audio {{ width: 100%; margin-top: 14px; }}
     .error {{
       color: #ff7b7b;
       font-size: 13px;
       margin-top: 10px;
       white-space: pre-wrap;
     }}
-
-    .section-title {{
-      margin-top: 20px;
-      margin-bottom: 6px;
-      font-size: 14px;
-      opacity: .7;
-    }}
-
     .version-btn {{
       background: #1f1f2e;
       font-size: 14px;
       text-align: left;
     }}
-
     .hint {{
       opacity: .6;
       font-size: 12px;
@@ -397,11 +356,9 @@ def web_app():
     <h1>{APP_NAME}</h1>
 
     <div class="meta" id="meta">Lade…</div>
-    
-    <div class="section-title">Projekt</div>
-    <select id="projectSelect" style="width:100%; padding:12px; border-radius:12px; border:0; background:#2a2a3a; color:white;">
-    </select>
 
+    <div class="section-title">Projekt</div>
+    <select id="projectSelect"></select>
 
     <button id="playLatest">▶ Play latest mix</button>
     <button class="secondary" id="refresh">↻ Refresh list</button>
@@ -414,13 +371,13 @@ def web_app():
     <div class="error" id="error"></div>
 
     <div class="hint">
-      Projekt: <b>{user_id}/{project_id}</b>
+      User: <b>{user_id}</b>
     </div>
   </div>
 
 <script>
-const USER_ID = "justin";
-let PROJECT_ID = "default";
+const USER_ID = "{user_id}";
+let PROJECT_ID = "{default_project}";
 
 const metaEl = document.getElementById("meta");
 const errorEl = document.getElementById("error");
@@ -431,112 +388,110 @@ const projectSelect = document.getElementById("projectSelect");
 const playLatestBtn = document.getElementById("playLatest");
 const refreshBtn = document.getElementById("refresh");
 
-async function fetchProjects() {
-  const res = await fetch(`/projects?user_id=${encodeURIComponent(USER_ID)}`, { cache: "no-store" });
+async function fetchProjects() {{
+  const res = await fetch(`/projects?user_id=${{encodeURIComponent(USER_ID)}}`, {{ cache: "no-store" }});
   if (!res.ok) throw new Error(await res.text());
   return await res.json();
-}
+}}
 
-async function fetchLatestMeta() {
+async function fetchLatestMeta() {{
   const res = await fetch(
-    `/latest_meta?user_id=${encodeURIComponent(USER_ID)}&project_id=${encodeURIComponent(PROJECT_ID)}`,
-    { cache: "no-store" }
+    `/latest_meta?user_id=${{encodeURIComponent(USER_ID)}}&project_id=${{encodeURIComponent(PROJECT_ID)}}`,
+    {{ cache: "no-store" }}
   );
   if (!res.ok) throw new Error(await res.text());
   return await res.json();
-}
+}}
 
-async function fetchVersions() {
+async function fetchVersions() {{
   const res = await fetch(
-    `/files?user_id=${encodeURIComponent(USER_ID)}&project_id=${encodeURIComponent(PROJECT_ID)}&limit=25`,
-    { cache: "no-store" }
+    `/files?user_id=${{encodeURIComponent(USER_ID)}}&project_id=${{encodeURIComponent(PROJECT_ID)}}&limit=25`,
+    {{ cache: "no-store" }}
   );
   if (!res.ok) throw new Error(await res.text());
   return await res.json();
-}
+}}
 
-function renderProjects(list) {
+function renderProjects(list) {{
   projectSelect.innerHTML = "";
-  for (const pid of list) {
+  for (const pid of list) {{
     const opt = document.createElement("option");
     opt.value = pid;
     opt.textContent = pid;
     if (pid === PROJECT_ID) opt.selected = true;
     projectSelect.appendChild(opt);
-  }
-}
+  }}
+}}
 
-function renderVersions(list) {
+function renderVersions(list) {{
   versionsEl.innerHTML = "";
-  if (!list.length) {
+  if (!list.length) {{
     versionsEl.innerHTML = "<div class='meta'>Keine Versionen gefunden.</div>";
     return;
-  }
+  }}
 
-  for (const v of list) {
+  for (const v of list) {{
     const btn = document.createElement("button");
     btn.className = "version-btn";
-    btn.textContent = `▶ ${v.created_at} — ${v.display_name}`;
-    btn.onclick = async () => {
+    btn.textContent = `▶ ${{v.created_at}} — ${{v.display_name}}`;
+    btn.onclick = async () => {{
       errorEl.textContent = "";
       player.src = v.audio_url;
-      try { await player.play(); } catch (e) { errorEl.textContent = String(e); }
-    };
+      try {{ await player.play(); }} catch (e) {{ errorEl.textContent = String(e); }}
+    }};
     versionsEl.appendChild(btn);
-  }
-}
+  }}
+}}
 
-async function refreshAll() {
+async function refreshAll() {{
   errorEl.textContent = "";
   metaEl.textContent = "Lade…";
 
-  try {
+  try {{
     const meta = await fetchLatestMeta();
-    metaEl.textContent = `Stand: ${meta.created_at}\n${meta.display_name}`;
+    metaEl.textContent = `Stand: ${{meta.created_at}}\\n${{meta.display_name}}`;
     player.src = meta.audio_url;
 
     const versions = await fetchVersions();
     renderVersions(versions);
-
-  } catch (e) {
+  }} catch (e) {{
     errorEl.textContent = String(e);
-  }
-}
+  }}
+}}
 
-projectSelect.addEventListener("change", async () => {
+projectSelect.addEventListener("change", async () => {{
   PROJECT_ID = projectSelect.value;
   await refreshAll();
-});
+}});
 
-playLatestBtn.onclick = async () => {
-  try {
+playLatestBtn.onclick = async () => {{
+  try {{
     if (!player.src) await refreshAll();
     await player.play();
-  } catch (e) {
+  }} catch (e) {{
     errorEl.textContent = String(e);
-  }
-};
+  }}
+}};
 
 refreshBtn.onclick = refreshAll;
 
-(async function init() {
-  try {
+(async function init() {{
+  try {{
     const p = await fetchProjects();
-    if (p.projects && p.projects.length) {
-      // falls default nicht existiert -> nimm erstes
-      if (!p.projects.includes(PROJECT_ID)) PROJECT_ID = p.projects[0];
-      renderProjects(p.projects);
-    } else {
+    const list = (p.projects || []);
+    if (list.length) {{
+      if (!list.includes(PROJECT_ID)) PROJECT_ID = list[0];
+      renderProjects(list);
+    }} else {{
       renderProjects([PROJECT_ID]);
-    }
-  } catch (e) {
-    // wenn projects endpoint leer ist, trotzdem weiter
+    }}
+  }} catch (e) {{
     renderProjects([PROJECT_ID]);
-  }
-  await refreshAll();
-})();
-</script>
+  }}
 
+  await refreshAll();
+}})();
+</script>
 
 </body>
 </html>
@@ -546,9 +501,3 @@ refreshBtn.onclick = refreshAll;
 @app.get("/", response_class=HTMLResponse)
 def root():
     return RedirectResponse(url="/app")
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
