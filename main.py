@@ -1,6 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from pathlib import Path
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
 import time
 
 app = FastAPI()
@@ -94,6 +95,55 @@ def latest_file(user_id: str | None = None, project_id: str | None = None):
         media_type="audio/wav",
         filename=latest.name,
     )
+
+def _find_latest_file(user_id: str | None = None, project_id: str | None = None) -> Path | None:
+    files = [f for f in UPLOAD_DIR.glob("*.wav")]
+
+    def matches(f: Path) -> bool:
+        if not user_id and not project_id:
+            return True
+        parts = f.name.split("__")
+        f_user = parts[0] if len(parts) > 0 else ""
+        f_project = parts[1] if len(parts) > 1 else ""
+        if user_id and f_user != user_id:
+            return False
+        if project_id and f_project != project_id:
+            return False
+        return True
+
+    files = [f for f in files if matches(f)]
+    files = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[0] if files else None
+
+
+@app.get("/latest_meta")
+def latest_meta(request: Request, user_id: str | None = None, project_id: str | None = None):
+    """
+    Gibt Metadaten zum neuesten Mix zurück, damit eine iOS-App leicht abspielen kann.
+    """
+    latest = _find_latest_file(user_id=user_id, project_id=project_id)
+    if not latest:
+        raise HTTPException(status_code=404, detail="No files found")
+
+    created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(latest.stat().st_mtime))
+
+    # Basis-URL (inkl. https://mixrefresh-api.onrender.com)
+    base_url = str(request.base_url).rstrip("/")
+
+    audio_url = f"{base_url}/latest"
+    params = []
+    if user_id:
+        params.append(f"user_id={user_id}")
+    if project_id:
+        params.append(f"project_id={project_id}")
+    if params:
+        audio_url += "?" + "&".join(params)
+
+    return {
+        "filename": latest.name,
+        "created_at": created_at,
+        "audio_url": audio_url
+    }
 
 
 @app.get("/player", response_class=HTMLResponse)
