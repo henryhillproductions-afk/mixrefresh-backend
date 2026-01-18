@@ -37,9 +37,23 @@ async def upload(
     file: UploadFile = File(...),
     user_id: str = Form("default_user"),
     project_id: str = Form("default_project"),
+    mode: str = Form("version"),  # "version" | "overwrite"
 ):
-    ts = time.strftime("%Y-%m-%d_%H-%M-%S")
-    safe_name = f"{user_id}__{project_id}__{ts}__{file.filename}"
+    """
+    Upload eines Mixes.
+    mode=version    -> speichert mit Timestamp (Historie)
+    mode=overwrite  -> überschreibt immer user__project__latest.wav
+    """
+    mode = (mode or "version").strip().lower()
+    if mode not in ("version", "overwrite"):
+        raise HTTPException(status_code=400, detail="Invalid mode. Use 'version' or 'overwrite'.")
+
+    if mode == "overwrite":
+        safe_name = f"{user_id}__{project_id}__latest.wav"
+    else:
+        ts = time.strftime("%Y-%m-%d_%H-%M-%S")
+        safe_name = f"{user_id}__{project_id}__{ts}__{file.filename}"
+
     dest = UPLOAD_DIR / safe_name
 
     content = await file.read()
@@ -52,11 +66,13 @@ async def upload(
             "path": str(dest),
             "user_id": user_id,
             "project_id": project_id,
+            "mode": mode,
             "created_at": time.strftime(
                 "%Y-%m-%d %H:%M:%S", time.localtime(dest.stat().st_mtime)
             ),
         }
     )
+
 
 
 @app.get("/files")
