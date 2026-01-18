@@ -60,7 +60,11 @@ async def upload(
 
 
 @app.get("/files")
-def list_files(user_id: str | None = None, project_id: str | None = None):
+def list_files(request: Request, user_id: str | None = None, project_id: str | None = None, limit: int = 20):
+    """
+    Listet Mix-Versionen (neueste zuerst), optional gefiltert nach user_id/project_id.
+    Gibt zusätzlich created_at + audio_url zurück, damit PWA leicht abspielen kann.
+    """
     files = [f for f in UPLOAD_DIR.glob("*.wav")]
 
     def matches(f: Path) -> bool:
@@ -76,17 +80,21 @@ def list_files(user_id: str | None = None, project_id: str | None = None):
         return True
 
     files = [f for f in files if matches(f)]
-    files = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+    files = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)[: max(1, min(limit, 200))]
 
-    return [
-        {
+    base_url = str(request.base_url).rstrip("/")
+
+    result = []
+    for f in files:
+        created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(f.stat().st_mtime))
+        # direkter Download/Stream-Link (Datei über neuen Endpoint /file)
+        result.append({
             "name": f.name,
-            "modified": time.strftime(
-                "%Y-%m-%d %H:%M:%S", time.localtime(f.stat().st_mtime)
-            ),
-        }
-        for f in files
-    ]
+            "created_at": created_at,
+            "audio_url": f"{base_url}/file/{f.name}",
+        })
+    return result
+
 
 
 @app.get("/latest")
@@ -101,6 +109,16 @@ def latest_file(user_id: str | None = None, project_id: str | None = None):
         filename=latest.name,
     )
 
+@app.get("/file/{filename}")
+def get_file(filename: str):
+    """
+    Streamt/Download eine spezifische Datei aus cloud_uploads.
+    """
+    path = UPLOAD_DIR / filename
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(path, media_type="audio/wav", filename=path.name)
 
 @app.get("/latest_meta")
 def latest_meta(request: Request, user_id: str | None = None, project_id: str | None = None):
@@ -159,7 +177,7 @@ def manifest():
 
 @app.get("/app", response_class=HTMLResponse)
 def web_app():
-    # Default-Projekt (später machen wir das konfigurierbar)
+    # Default-Projekt (später konfigurierbar)
     user_id = "justin"
     project_id = "default"
 
@@ -171,50 +189,113 @@ def web_app():
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="{APP_NAME}">
+  <meta name="apple-mobile-web-app-title" content="MixRefresh">
   <link rel="manifest" href="/manifest.webmanifest">
-  <title>{APP_NAME}</title>
+  <title>MixRefresh</title>
+
   <style>
     body {{
       font-family: -apple-system, system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-      margin: 0; padding: 24px;
-      display: flex; align-items: center; justify-content: center;
-      min-height: 100vh; background: #0b0b0f; color: #fff;
+      margin: 0;
+      padding: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      background: #0b0b0f;
+      color: #fff;
     }}
+
     .card {{
-      width: 100%; max-width: 520px;
-      background: #151521; border-radius: 18px;
-      padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,.35);
+      width: 100%;
+      max-width: 520px;
+      background: #151521;
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.35);
     }}
-    h1 {{ margin: 0 0 6px 0; font-size: 22px; }}
-    .meta {{ opacity: .75; font-size: 13px; margin-bottom: 16px; word-break: break-word; }}
+
+    h1 {{
+      margin: 0 0 6px 0;
+      font-size: 22px;
+    }}
+
+    .meta {{
+      opacity: .75;
+      font-size: 13px;
+      margin-bottom: 14px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }}
+
     button {{
-      width: 100%; border: 0; border-radius: 14px;
-      padding: 14px 16px; font-size: 16px; font-weight: 600;
-      background: #4f7cff; color: white;
+      width: 100%;
+      border: 0;
+      border-radius: 14px;
+      padding: 14px 16px;
+      font-size: 16px;
+      font-weight: 600;
+      background: #4f7cff;
+      color: white;
+      margin-top: 10px;
     }}
-    button:disabled {{ opacity: .6; }}
-    audio {{ width: 100%; margin-top: 14px; }}
-    .row {{ display:flex; gap:10px; margin-top: 10px; }}
-    .row button {{ flex:1; background:#2a2a3a; }}
-    .row button.primary {{ background:#4f7cff; }}
-    .error {{ color: #ff7b7b; font-size: 13px; margin-top: 10px; white-space: pre-wrap; }}
-    .hint {{ opacity:.7; font-size:12px; margin-top:12px; }}
+
+    button.secondary {{
+      background: #2a2a3a;
+    }}
+
+    button:disabled {{
+      opacity: .6;
+    }}
+
+    audio {{
+      width: 100%;
+      margin-top: 14px;
+    }}
+
+    .error {{
+      color: #ff7b7b;
+      font-size: 13px;
+      margin-top: 10px;
+      white-space: pre-wrap;
+    }}
+
+    .section-title {{
+      margin-top: 20px;
+      margin-bottom: 6px;
+      font-size: 14px;
+      opacity: .7;
+    }}
+
+    .version-btn {{
+      background: #1f1f2e;
+      font-size: 14px;
+      text-align: left;
+    }}
+
+    .hint {{
+      opacity: .6;
+      font-size: 12px;
+      margin-top: 12px;
+    }}
   </style>
 </head>
+
 <body>
   <div class="card">
-    <h1>{APP_NAME}</h1>
+    <h1>MixRefresh</h1>
+
     <div class="meta" id="meta">Lade…</div>
 
-    <button class="primary" id="playBtn">Play latest</button>
-    <div class="row">
-      <button id="refreshBtn">Refresh info</button>
-      <button id="stopBtn">Stop</button>
-    </div>
+    <button id="playLatest">▶ Play latest mix</button>
+    <button class="secondary" id="refresh">↻ Refresh list</button>
 
     <audio id="player" controls preload="none"></audio>
-    <div class="error" id="err"></div>
+
+    <div class="section-title">Versionen</div>
+    <div id="versions"></div>
+
+    <div class="error" id="error"></div>
 
     <div class="hint">
       Projekt: <b>{user_id}/{project_id}</b>
@@ -222,67 +303,95 @@ def web_app():
   </div>
 
 <script>
-const USER_ID = {json.dumps(user_id)};
-const PROJECT_ID = {json.dumps(project_id)};
+const USER_ID = "{user_id}";
+const PROJECT_ID = "{project_id}";
 
 const metaEl = document.getElementById("meta");
-const errEl = document.getElementById("err");
+const errorEl = document.getElementById("error");
 const player = document.getElementById("player");
-const playBtn = document.getElementById("playBtn");
-const refreshBtn = document.getElementById("refreshBtn");
-const stopBtn = document.getElementById("stopBtn");
+const versionsEl = document.getElementById("versions");
+
+const playLatestBtn = document.getElementById("playLatest");
+const refreshBtn = document.getElementById("refresh");
 
 async function fetchLatestMeta() {{
-  errEl.textContent = "";
+  const res = await fetch(
+    `/latest_meta?user_id=${{encodeURIComponent(USER_ID)}}&project_id=${{encodeURIComponent(PROJECT_ID)}}`,
+    {{ cache: "no-store" }}
+  );
+  if (!res.ok) throw new Error(await res.text());
+  return await res.json();
+}}
+
+async function fetchVersions() {{
+  const res = await fetch(
+    `/files?user_id=${{encodeURIComponent(USER_ID)}}&project_id=${{encodeURIComponent(PROJECT_ID)}}&limit=25`,
+    {{ cache: "no-store" }}
+  );
+  if (!res.ok) throw new Error(await res.text());
+  return await res.json();
+}}
+
+function renderVersions(list) {{
+  versionsEl.innerHTML = "";
+  if (!list.length) {{
+    versionsEl.innerHTML = "<div class='meta'>Keine Versionen gefunden.</div>";
+    return;
+  }}
+
+  for (const v of list) {{
+    const btn = document.createElement("button");
+    btn.className = "version-btn";
+    btn.textContent = `▶ ${{v.created_at}} — ${{v.name}}`;
+    btn.onclick = async () => {{
+      errorEl.textContent = "";
+      player.src = v.audio_url;
+      try {{
+        await player.play();
+      }} catch (e) {{
+        errorEl.textContent = String(e);
+      }}
+    }};
+    versionsEl.appendChild(btn);
+  }}
+}}
+
+async function refreshAll() {{
+  errorEl.textContent = "";
   metaEl.textContent = "Lade…";
-  const url = `/latest_meta?user_id=${{encodeURIComponent(USER_ID)}}&project_id=${{encodeURIComponent(PROJECT_ID)}}`;
-  const res = await fetch(url, {{ cache: "no-store" }});
-  if (!res.ok) {{
-    const txt = await res.text();
-    throw new Error(txt);
-  }}
-  const j = await res.json();
-  metaEl.textContent = `Stand: ${{j.created_at}}\\n${{j.filename}}`;
-  return j;
-}}
 
-async function refresh() {{
-  playBtn.disabled = true;
-  refreshBtn.disabled = true;
   try {{
-    const j = await fetchLatestMeta();
-    player.src = j.audio_url;
+    const meta = await fetchLatestMeta();
+    metaEl.textContent = `Stand: ${{meta.created_at}}\\n${{meta.filename}}`;
+    player.src = meta.audio_url;
+
+    const versions = await fetchVersions();
+    renderVersions(versions);
+
   }} catch (e) {{
-    errEl.textContent = String(e);
-  }} finally {{
-    playBtn.disabled = false;
-    refreshBtn.disabled = false;
+    errorEl.textContent = String(e);
   }}
 }}
 
-playBtn.addEventListener("click", async () => {{
+playLatestBtn.onclick = async () => {{
   try {{
-    if (!player.src) {{
-      await refresh();
-    }}
+    if (!player.src) await refreshAll();
     await player.play();
   }} catch (e) {{
-    errEl.textContent = String(e);
+    errorEl.textContent = String(e);
   }}
-}});
+}};
 
-refreshBtn.addEventListener("click", refresh);
-stopBtn.addEventListener("click", () => {{
-  player.pause();
-  player.currentTime = 0;
-}});
+refreshBtn.onclick = refreshAll;
 
-// Auto-load beim Öffnen
-refresh();
+// Beim Öffnen automatisch laden
+refreshAll();
 </script>
+
 </body>
 </html>
 """
+
 
 
 @app.get("/", response_class=HTMLResponse)
