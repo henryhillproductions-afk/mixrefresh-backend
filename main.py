@@ -5,7 +5,6 @@ import time
 
 app = FastAPI()
 
-# Achtung: Auf Render ist das nur temporärer Speicher.
 UPLOAD_DIR = Path("cloud_uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
@@ -16,10 +15,6 @@ async def upload(
     user_id: str = Form("default_user"),
     project_id: str = Form("default_project"),
 ):
-    """
-    Nimmt eine WAV-Datei + User/Projekt entgegen und speichert sie auf dem Server.
-    Später ersetzen wir das durch echten Object Storage (z.B. S3).
-    """
     ts = time.strftime("%Y-%m-%d_%H-%M-%S")
     safe_name = f"{user_id}__{project_id}__{ts}__{file.filename}"
     dest = UPLOAD_DIR / safe_name
@@ -43,9 +38,6 @@ async def upload(
 
 @app.get("/files")
 def list_files(user_id: str | None = None, project_id: str | None = None):
-    """
-    Listet alle Mixes, optional gefiltert nach User/Projekt.
-    """
     files = [f for f in UPLOAD_DIR.glob("*.wav")]
 
     def matches(f: Path) -> bool:
@@ -76,9 +68,6 @@ def list_files(user_id: str | None = None, project_id: str | None = None):
 
 @app.get("/latest")
 def latest_file(user_id: str | None = None, project_id: str | None = None):
-    """
-    Gibt die neueste WAV-Datei zurück (optional pro User/Projekt).
-    """
     files = [f for f in UPLOAD_DIR.glob("*.wav")]
 
     def matches(f: Path) -> bool:
@@ -109,9 +98,6 @@ def latest_file(user_id: str | None = None, project_id: str | None = None):
 
 @app.get("/player", response_class=HTMLResponse)
 def player(user_id: str = "default_user", project_id: str = "default_project"):
-    """
-    Einfacher Webplayer für den neuesten Mix (für Tests).
-    """
     return f"""
     <html>
     <head><title>Mix Player</title></head>
@@ -119,8 +105,35 @@ def player(user_id: str = "default_user", project_id: str = "default_project"):
         <h2>Latest Mix for {user_id} / {project_id}</h2>
         <audio controls style="width:90%">
           <source src="/latest?user_id={user_id}&project_id={project_id}" type="audio/wav">
-          Your browser does not support the audio element.
         </audio>
     </body>
     </html>
     """
+
+
+@app.get("/", response_class=HTMLResponse)
+def root():
+    """
+    Root-URL zeigt direkt den Player für dein Standard-Projekt.
+    Also mixrefresh-api.onrender.com -> Player für justin/default.
+    """
+    user_id = "justin"
+    project_id = "default"
+
+    return f"""
+    <html>
+    <head><title>Mix Player</title></head>
+    <body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
+        <h2>Latest Mix for {user_id} / {project_id}</h2>
+        <audio controls style="width:90%">
+          <source src="/latest?user_id={user_id}&project_id={project_id}" type="audio/wav">
+        </audio>
+    </body>
+    </html>
+    """
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
