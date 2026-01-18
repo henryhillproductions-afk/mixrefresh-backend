@@ -40,7 +40,19 @@ UPLOAD_DIR = Path("cloud_uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 APP_NAME = "MixRefresh"
+def _display_from_internal_filename(filename: str) -> str:
+    """
+    Interner Dateiname:
+      user__project__TIMESTAMP__Pretty.wav
+      user__project__latest__Pretty.wav
 
+    Anzeige im UI:
+      Pretty.wav
+    """
+    parts = filename.split("__", 3)
+    if len(parts) == 4:
+        return parts[3]
+    return filename
 
 def _safe_filename_part(s: str) -> str:
     """
@@ -140,9 +152,6 @@ def latest_file(user_id: Optional[str] = None, project_id: Optional[str] = None)
 
 @app.get("/latest_meta")
 def latest_meta(request: Request, user_id: Optional[str] = None, project_id: Optional[str] = None):
-    """
-    Returns metadata about the newest mix, including an audio_url to stream it.
-    """
     latest = _find_latest_file(user_id=user_id, project_id=project_id)
     if not latest:
         raise HTTPException(status_code=404, detail="No files found")
@@ -159,11 +168,18 @@ def latest_meta(request: Request, user_id: Optional[str] = None, project_id: Opt
     if params:
         audio_url += "?" + "&".join(params)
 
+    display_name = _display_from_internal_filename(latest.name)
+    # Immer markieren, weil es ja "latest" ist
+    if " (latest)" not in display_name:
+        display_name = display_name.replace(".wav", " (latest).wav") if display_name.lower().endswith(".wav") else f"{display_name} (latest)"
+
     return {
-        "filename": latest.name,
+        "filename": latest.name,            # intern (für Debug)
+        "display_name": display_name,       # fürs UI
         "created_at": created_at,
         "audio_url": audio_url,
     }
+
 
 
 @app.get("/file/{filename}")
@@ -180,9 +196,6 @@ def get_file(filename: str):
 
 @app.get("/files")
 def list_files(request: Request, user_id: Optional[str] = None, project_id: Optional[str] = None, limit: int = 25):
-    """
-    Lists mix versions (newest first) for a user/project, returning audio_url for each.
-    """
     files = [f for f in UPLOAD_DIR.glob("*.wav")]
 
     def matches(f: Path) -> bool:
@@ -200,23 +213,28 @@ def list_files(request: Request, user_id: Optional[str] = None, project_id: Opti
     files = [f for f in files if matches(f)]
     files = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
 
-    # clamp limit
     limit = max(1, min(int(limit), 200))
     files = files[:limit]
 
     base_url = str(request.base_url).rstrip("/")
-
     out = []
-    for f in files:
+    for idx, f in enumerate(files):
         created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(f.stat().st_mtime))
-        out.append(
-            {
-                "name": f.name,
-                "created_at": created_at,
-                "audio_url": f"{base_url}/file/{f.name}",
-            }
-        )
+        display_name = _display_from_internal_filename(f.name)
+
+        is_latest = (idx == 0)
+        if is_latest and " (latest)" not in display_name:
+            display_name = display_name.replace(".wav", " (latest).wav") if display_name.lower().endswith(".wav") else f"{display_name} (latest)"
+
+        out.append({
+            "name": f.name,  # intern
+            "display_name": display_name,
+            "created_at": created_at,
+            "is_latest": is_latest,
+            "audio_url": f"{base_url}/file/{f.name}",
+        })
     return out
+
 
 
 @app.get("/player", response_class=HTMLResponse)
@@ -250,6 +268,17 @@ def manifest():
     }
     return Response(content=json.dumps(content), media_type="application/manifest+json")
 
+@app.get("/projects")
+def list_projects(user_id: str = "justin"):
+    """
+    Liest aus den Dateinamen alle vorhandenen project_id für einen user_id.
+    """
+    projects = set()
+    for f in UPLOAD_DIR.glob("*.wav"):
+        parts = f.name.split("__")
+        if len(parts) >= 2 and parts[0] == user_id:
+            projects.add(parts[1])
+    return {"user_id": user_id, "projects": sorted(projects)}
 
 @app.get("/app", response_class=HTMLResponse)
 def web_app():
@@ -368,6 +397,11 @@ def web_app():
     <h1>{APP_NAME}</h1>
 
     <div class="meta" id="meta">Lade…</div>
+    
+    <div class="section-title">Projekt</div>
+    <select id="projectSelect" style="width:100%; padding:12px; border-radius:12px; border:0; background:#2a2a3a; color:white;">
+    </select>
+
 
     <button id="playLatest">▶ Play latest mix</button>
     <button class="secondary" id="refresh">↻ Refresh list</button>
@@ -385,90 +419,124 @@ def web_app():
   </div>
 
 <script>
-const USER_ID = "{user_id}";
-const PROJECT_ID = "{project_id}";
+const USER_ID = "justin";
+let PROJECT_ID = "default";
 
 const metaEl = document.getElementById("meta");
 const errorEl = document.getElementById("error");
 const player = document.getElementById("player");
 const versionsEl = document.getElementById("versions");
+const projectSelect = document.getElementById("projectSelect");
 
 const playLatestBtn = document.getElementById("playLatest");
 const refreshBtn = document.getElementById("refresh");
 
-async function fetchLatestMeta() {{
+async function fetchProjects() {
+  const res = await fetch(`/projects?user_id=${encodeURIComponent(USER_ID)}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(await res.text());
+  return await res.json();
+}
+
+async function fetchLatestMeta() {
   const res = await fetch(
-    `/latest_meta?user_id=${{encodeURIComponent(USER_ID)}}&project_id=${{encodeURIComponent(PROJECT_ID)}}`,
-    {{ cache: "no-store" }}
+    `/latest_meta?user_id=${encodeURIComponent(USER_ID)}&project_id=${encodeURIComponent(PROJECT_ID)}`,
+    { cache: "no-store" }
   );
   if (!res.ok) throw new Error(await res.text());
   return await res.json();
-}}
+}
 
-async function fetchVersions() {{
+async function fetchVersions() {
   const res = await fetch(
-    `/files?user_id=${{encodeURIComponent(USER_ID)}}&project_id=${{encodeURIComponent(PROJECT_ID)}}&limit=25`,
-    {{ cache: "no-store" }}
+    `/files?user_id=${encodeURIComponent(USER_ID)}&project_id=${encodeURIComponent(PROJECT_ID)}&limit=25`,
+    { cache: "no-store" }
   );
   if (!res.ok) throw new Error(await res.text());
   return await res.json();
-}}
+}
 
-function renderVersions(list) {{
+function renderProjects(list) {
+  projectSelect.innerHTML = "";
+  for (const pid of list) {
+    const opt = document.createElement("option");
+    opt.value = pid;
+    opt.textContent = pid;
+    if (pid === PROJECT_ID) opt.selected = true;
+    projectSelect.appendChild(opt);
+  }
+}
+
+function renderVersions(list) {
   versionsEl.innerHTML = "";
-  if (!list.length) {{
+  if (!list.length) {
     versionsEl.innerHTML = "<div class='meta'>Keine Versionen gefunden.</div>";
     return;
-  }}
+  }
 
-  for (const v of list) {{
+  for (const v of list) {
     const btn = document.createElement("button");
     btn.className = "version-btn";
-    btn.textContent = `▶ ${{v.created_at}} — ${{v.name}}`;
-    btn.onclick = async () => {{
+    btn.textContent = `▶ ${v.created_at} — ${v.display_name}`;
+    btn.onclick = async () => {
       errorEl.textContent = "";
       player.src = v.audio_url;
-      try {{
-        await player.play();
-      }} catch (e) {{
-        errorEl.textContent = String(e);
-      }}
-    }};
+      try { await player.play(); } catch (e) { errorEl.textContent = String(e); }
+    };
     versionsEl.appendChild(btn);
-  }}
-}}
+  }
+}
 
-async function refreshAll() {{
+async function refreshAll() {
   errorEl.textContent = "";
   metaEl.textContent = "Lade…";
 
-  try {{
+  try {
     const meta = await fetchLatestMeta();
-    metaEl.textContent = `Stand: ${{meta.created_at}}\\n${{meta.filename}}`;
+    metaEl.textContent = `Stand: ${meta.created_at}\n${meta.display_name}`;
     player.src = meta.audio_url;
 
     const versions = await fetchVersions();
     renderVersions(versions);
 
-  }} catch (e) {{
+  } catch (e) {
     errorEl.textContent = String(e);
-  }}
-}}
+  }
+}
 
-playLatestBtn.onclick = async () => {{
-  try {{
+projectSelect.addEventListener("change", async () => {
+  PROJECT_ID = projectSelect.value;
+  await refreshAll();
+});
+
+playLatestBtn.onclick = async () => {
+  try {
     if (!player.src) await refreshAll();
     await player.play();
-  }} catch (e) {{
+  } catch (e) {
     errorEl.textContent = String(e);
-  }}
-}};
+  }
+};
 
 refreshBtn.onclick = refreshAll;
 
-// Auto-load beim Öffnen
-refreshAll();
+(async function init() {
+  try {
+    const p = await fetchProjects();
+    if (p.projects && p.projects.length) {
+      // falls default nicht existiert -> nimm erstes
+      if (!p.projects.includes(PROJECT_ID)) PROJECT_ID = p.projects[0];
+      renderProjects(p.projects);
+    } else {
+      renderProjects([PROJECT_ID]);
+    }
+  } catch (e) {
+    // wenn projects endpoint leer ist, trotzdem weiter
+    renderProjects([PROJECT_ID]);
+  }
+  await refreshAll();
+})();
 </script>
+
 
 </body>
 </html>
