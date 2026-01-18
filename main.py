@@ -1,8 +1,38 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
-from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, RedirectResponse, Response
-from pathlib import Path
-import time
+# main.py (Backend - FastAPI)
+# MixRefresh API: Upload + Latest + Meta + Files + File streaming + Player + PWA (/app)
+#
+# Features:
+# - POST /upload : accepts WAV + user_id + project_id + mode (version|overwrite)
+#   + accepts display_name + version_label to build pretty filenames:
+#     "Projektname_Version XX.wav" and "(latest)" suffix when overwrite
+# - GET /latest : streams latest wav for user/project
+# - GET /latest_meta : returns filename, created_at, audio_url
+# - GET /files : returns list of versions (name, created_at, audio_url) - newest first
+# - GET /file/{filename} : stream a specific wav by filename
+# - GET /player : simple HTML player
+# - GET /app : PWA app UI (latest + versions list)
+# - GET /manifest.webmanifest : PWA manifest
+# - GET / : redirect to /app
+#
+# Notes:
+# - Render free tier has non-persistent disk. Uploads may disappear after redeploy/restart.
+
+from __future__ import annotations
+
 import json
+import re
+import time
+from pathlib import Path
+from typing import Optional
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
+from fastapi.responses import (
+    JSONResponse,
+    FileResponse,
+    HTMLResponse,
+    RedirectResponse,
+    Response,
+)
 
 app = FastAPI()
 
@@ -12,7 +42,18 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 APP_NAME = "MixRefresh"
 
 
-def _find_latest_file(user_id: str | None = None, project_id: str | None = None) -> Path | None:
+def _safe_filename_part(s: str) -> str:
+    """
+    Make a user-provided string safe for filenames and URLs.
+    Keeps spaces (nice for readability) but strips illegal/suspicious characters.
+    """
+    s = (s or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r'[\\/:*?"<>|]+', "", s)
+    return s
+
+
+def _find_latest_file(user_id: Optional[str] = None, project_id: Optional[str] = None) -> Optional[Path]:
     files = [f for f in UPLOAD_DIR.glob("*.wav")]
 
     def matches(f: Path) -> bool:
@@ -38,21 +79,32 @@ async def upload(
     user_id: str = Form("default_user"),
     project_id: str = Form("default_project"),
     mode: str = Form("version"),  # "version" | "overwrite"
+    display_name: str = Form(""),
+    version_label: str = Form(""),
 ):
     """
-    Upload eines Mixes.
-    mode=version    -> speichert mit Timestamp (Historie)
-    mode=overwrite  -> überschreibt immer user__project__latest.wav
+    Upload a mix.
+    mode=version   -> stores with timestamp (history)
+    mode=overwrite -> always overwrites a stable "latest" file for that project
+    Also receives display_name/version_label to build pretty filename:
+      Projektname_Version XX.wav
+      Projektname_Version XX (latest).wav
+    Internally we still prefix with user_id/project_id for filtering.
     """
     mode = (mode or "version").strip().lower()
     if mode not in ("version", "overwrite"):
         raise HTTPException(status_code=400, detail="Invalid mode. Use 'version' or 'overwrite'.")
 
+    pretty_project = _safe_filename_part(display_name) or project_id
+    pretty_version = _safe_filename_part(version_label) or time.strftime("%Y-%m-%d_%H-%M-%S")
+
     if mode == "overwrite":
-        safe_name = f"{user_id}__{project_id}__latest.wav"
+        pretty = f"{pretty_project}_{pretty_version} (latest).wav"
+        safe_name = f"{user_id}__{project_id}__latest__{pretty}"
     else:
         ts = time.strftime("%Y-%m-%d_%H-%M-%S")
-        safe_name = f"{user_id}__{project_id}__{ts}__{file.filename}"
+        pretty = f"{pretty_project}_{pretty_version}.wav"
+        safe_name = f"{user_id}__{project_id}__{ts}__{pretty}"
 
     dest = UPLOAD_DIR / safe_name
 
@@ -67,19 +119,69 @@ async def upload(
             "user_id": user_id,
             "project_id": project_id,
             "mode": mode,
-            "created_at": time.strftime(
-                "%Y-%m-%d %H:%M:%S", time.localtime(dest.stat().st_mtime)
-            ),
+            "display_name": pretty_project,
+            "version_label": pretty_version,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(dest.stat().st_mtime)),
         }
     )
 
 
+@app.get("/latest")
+def latest_file(user_id: Optional[str] = None, project_id: Optional[str] = None):
+    """
+    Streams the most recently modified WAV for user/project.
+    """
+    latest = _find_latest_file(user_id=user_id, project_id=project_id)
+    if not latest:
+        raise HTTPException(status_code=404, detail="No files found")
+
+    return FileResponse(latest, media_type="audio/wav", filename=latest.name)
+
+
+@app.get("/latest_meta")
+def latest_meta(request: Request, user_id: Optional[str] = None, project_id: Optional[str] = None):
+    """
+    Returns metadata about the newest mix, including an audio_url to stream it.
+    """
+    latest = _find_latest_file(user_id=user_id, project_id=project_id)
+    if not latest:
+        raise HTTPException(status_code=404, detail="No files found")
+
+    created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(latest.stat().st_mtime))
+    base_url = str(request.base_url).rstrip("/")
+
+    audio_url = f"{base_url}/latest"
+    params = []
+    if user_id:
+        params.append(f"user_id={user_id}")
+    if project_id:
+        params.append(f"project_id={project_id}")
+    if params:
+        audio_url += "?" + "&".join(params)
+
+    return {
+        "filename": latest.name,
+        "created_at": created_at,
+        "audio_url": audio_url,
+    }
+
+
+@app.get("/file/{filename}")
+def get_file(filename: str):
+    """
+    Streams/Downloads a specific WAV from cloud_uploads by filename.
+    """
+    path = UPLOAD_DIR / filename
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(path, media_type="audio/wav", filename=path.name)
+
 
 @app.get("/files")
-def list_files(request: Request, user_id: str | None = None, project_id: str | None = None, limit: int = 20):
+def list_files(request: Request, user_id: Optional[str] = None, project_id: Optional[str] = None, limit: int = 25):
     """
-    Listet Mix-Versionen (neueste zuerst), optional gefiltert nach user_id/project_id.
-    Gibt zusätzlich created_at + audio_url zurück, damit PWA leicht abspielen kann.
+    Lists mix versions (newest first) for a user/project, returning audio_url for each.
     """
     files = [f for f in UPLOAD_DIR.glob("*.wav")]
 
@@ -96,74 +198,32 @@ def list_files(request: Request, user_id: str | None = None, project_id: str | N
         return True
 
     files = [f for f in files if matches(f)]
-    files = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)[: max(1, min(limit, 200))]
+    files = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+
+    # clamp limit
+    limit = max(1, min(int(limit), 200))
+    files = files[:limit]
 
     base_url = str(request.base_url).rstrip("/")
 
-    result = []
+    out = []
     for f in files:
         created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(f.stat().st_mtime))
-        # direkter Download/Stream-Link (Datei über neuen Endpoint /file)
-        result.append({
-            "name": f.name,
-            "created_at": created_at,
-            "audio_url": f"{base_url}/file/{f.name}",
-        })
-    return result
-
-
-
-@app.get("/latest")
-def latest_file(user_id: str | None = None, project_id: str | None = None):
-    latest = _find_latest_file(user_id=user_id, project_id=project_id)
-    if not latest:
-        raise HTTPException(status_code=404, detail="No files found")
-
-    return FileResponse(
-        latest,
-        media_type="audio/wav",
-        filename=latest.name,
-    )
-
-@app.get("/file/{filename}")
-def get_file(filename: str):
-    """
-    Streamt/Download eine spezifische Datei aus cloud_uploads.
-    """
-    path = UPLOAD_DIR / filename
-    if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
-
-    return FileResponse(path, media_type="audio/wav", filename=path.name)
-
-@app.get("/latest_meta")
-def latest_meta(request: Request, user_id: str | None = None, project_id: str | None = None):
-    latest = _find_latest_file(user_id=user_id, project_id=project_id)
-    if not latest:
-        raise HTTPException(status_code=404, detail="No files found")
-
-    created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(latest.stat().st_mtime))
-
-    base_url = str(request.base_url).rstrip("/")
-    audio_url = f"{base_url}/latest"
-
-    params = []
-    if user_id:
-        params.append(f"user_id={user_id}")
-    if project_id:
-        params.append(f"project_id={project_id}")
-    if params:
-        audio_url += "?" + "&".join(params)
-
-    return {
-        "filename": latest.name,
-        "created_at": created_at,
-        "audio_url": audio_url
-    }
+        out.append(
+            {
+                "name": f.name,
+                "created_at": created_at,
+                "audio_url": f"{base_url}/file/{f.name}",
+            }
+        )
+    return out
 
 
 @app.get("/player", response_class=HTMLResponse)
 def player(user_id: str = "default_user", project_id: str = "default_project"):
+    """
+    Simple HTML player for latest.
+    """
     return f"""
     <html>
     <head><title>Mix Player</title></head>
@@ -186,13 +246,19 @@ def manifest():
         "display": "standalone",
         "background_color": "#0b0b0f",
         "theme_color": "#0b0b0f",
-        "icons": []
+        "icons": [],
     }
     return Response(content=json.dumps(content), media_type="application/manifest+json")
 
 
 @app.get("/app", response_class=HTMLResponse)
 def web_app():
+    """
+    PWA UI:
+    - shows latest_meta
+    - lists versions via /files
+    - plays selected version via <audio>
+    """
     # Default-Projekt (später konfigurierbar)
     user_id = "justin"
     project_id = "default"
@@ -205,9 +271,9 @@ def web_app():
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="MixRefresh">
+  <meta name="apple-mobile-web-app-title" content="{APP_NAME}">
   <link rel="manifest" href="/manifest.webmanifest">
-  <title>MixRefresh</title>
+  <title>{APP_NAME}</title>
 
   <style>
     body {{
@@ -299,7 +365,7 @@ def web_app():
 
 <body>
   <div class="card">
-    <h1>MixRefresh</h1>
+    <h1>{APP_NAME}</h1>
 
     <div class="meta" id="meta">Lade…</div>
 
@@ -400,7 +466,7 @@ playLatestBtn.onclick = async () => {{
 
 refreshBtn.onclick = refreshAll;
 
-// Beim Öffnen automatisch laden
+// Auto-load beim Öffnen
 refreshAll();
 </script>
 
@@ -409,8 +475,12 @@ refreshAll();
 """
 
 
-
 @app.get("/", response_class=HTMLResponse)
 def root():
-    # Zentrale Anlaufstelle: Root führt zur "App"
     return RedirectResponse(url="/app")
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
