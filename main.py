@@ -1,3 +1,12 @@
+# main.py (Backend - FastAPI)  ✅ KOMPLETT
+# - Upload WAV (mode=version|overwrite) + display_name + version_label
+# - Latest + Latest Meta (immer "(latest)" im display_name)
+# - Files list (zeigt display_name ohne user__project__ Prefix, latest markiert)
+# - Project registry:
+#     GET  /projects   -> liefert Projekte mit display_name (für Dropdown)
+#     POST /projects   -> Desktop synced Projektliste hierhin
+# - PWA /app mit Projekt-Dropdown (zeigt Display-Namen, nutzt project_id intern)
+
 from __future__ import annotations
 
 import json
@@ -16,6 +25,8 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 APP_NAME = "MixRefresh"
 
+PROJECTS_FILE_SUFFIX = "__projects.json"
+
 
 # -----------------------
 # Helper functions
@@ -32,13 +43,41 @@ def _display_from_internal_filename(filename: str) -> str:
     Interner Dateiname:
       user__project__TIMESTAMP__Pretty.wav
       user__project__latest__Pretty.wav
-    Display für UI:
+    Display im UI:
       Pretty.wav
     """
     parts = filename.split("__", 3)
     if len(parts) == 4:
         return parts[3]
     return filename
+
+
+def _add_latest_tag(name: str) -> str:
+    """Fügt ' (latest)' vor .wav ein, wenn noch nicht enthalten."""
+    if " (latest)" in name:
+        return name
+    if name.lower().endswith(".wav"):
+        return name[:-4] + " (latest).wav"
+    return name + " (latest)"
+
+
+def _projects_path(user_id: str) -> Path:
+    return UPLOAD_DIR / f"{user_id}{PROJECTS_FILE_SUFFIX}"
+
+
+def _load_projects(user_id: str) -> dict:
+    p = _projects_path(user_id)
+    if not p.exists():
+        return {"user_id": user_id, "projects": []}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {"user_id": user_id, "projects": []}
+
+
+def _save_projects(user_id: str, data: dict) -> None:
+    p = _projects_path(user_id)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _find_latest_file(user_id: Optional[str] = None, project_id: Optional[str] = None) -> Optional[Path]:
@@ -62,7 +101,47 @@ def _find_latest_file(user_id: Optional[str] = None, project_id: Optional[str] =
 
 
 # -----------------------
-# API routes
+# Project registry (for Web App dropdown)
+# -----------------------
+@app.get("/projects")
+def list_projects(user_id: str = "justin"):
+    """
+    Liefert Projektliste für UI:
+      { "user_id": "...", "projects": [ {"project_id":"default","display_name":"Bunt"}, ... ] }
+    """
+    return _load_projects(user_id)
+
+
+@app.post("/projects")
+def upsert_projects(
+    user_id: str = Form(...),
+    projects_json: str = Form(...),
+):
+    """
+    Desktop sendet die komplette Projektliste als JSON-String.
+    projects_json erwartet:
+      {"projects":[{"project_id":"default","display_name":"Bunt"}, ...]}
+    """
+    try:
+        payload = json.loads(projects_json)
+        projects = payload.get("projects", [])
+
+        cleaned = []
+        for p in projects:
+            pid = str(p.get("project_id", "")).strip()
+            name = str(p.get("display_name", "")).strip()
+            if pid and name:
+                cleaned.append({"project_id": pid, "display_name": name})
+
+        data = {"user_id": user_id, "projects": cleaned}
+        _save_projects(user_id, data)
+        return {"ok": True, "count": len(cleaned)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid projects_json: {e}")
+
+
+# -----------------------
+# Upload + Audio APIs
 # -----------------------
 @app.post("/upload")
 async def upload(
@@ -74,15 +153,15 @@ async def upload(
     version_label: str = Form(""),
 ):
     """
-    Upload a mix.
-
     mode=version   -> stores with timestamp (history)
     mode=overwrite -> overwrites a stable "latest" file for that project
 
-    Also uses display_name/version_label to build a pretty name:
+    Pretty filename:
       Projektname_Version XX.wav
-      Projektname_Version XX (latest).wav   (for overwrite)
-    But keeps internal prefix user__project__... for filtering.
+      Projektname_Version XX (latest).wav   (when overwrite)
+
+    Internal prefix kept for filtering:
+      user__project__...__Pretty.wav
     """
     mode = (mode or "version").strip().lower()
     if mode not in ("version", "overwrite"):
@@ -144,12 +223,7 @@ def latest_meta(request: Request, user_id: Optional[str] = None, project_id: Opt
         audio_url += "?" + "&".join(params)
 
     display_name = _display_from_internal_filename(latest.name)
-    # Latest immer markieren (auch wenn mode=version war)
-    if " (latest)" not in display_name:
-        if display_name.lower().endswith(".wav"):
-            display_name = display_name[:-4] + " (latest).wav"
-        else:
-            display_name = display_name + " (latest)"
+    display_name = _add_latest_tag(display_name)  # immer markieren
 
     return {
         "filename": latest.name,       # intern (Debug)
@@ -197,11 +271,8 @@ def list_files(request: Request, user_id: Optional[str] = None, project_id: Opti
         display_name = _display_from_internal_filename(f.name)
 
         is_latest = idx == 0
-        if is_latest and " (latest)" not in display_name:
-            if display_name.lower().endswith(".wav"):
-                display_name = display_name[:-4] + " (latest).wav"
-            else:
-                display_name = display_name + " (latest)"
+        if is_latest:
+            display_name = _add_latest_tag(display_name)
 
         out.append(
             {
@@ -215,19 +286,9 @@ def list_files(request: Request, user_id: Optional[str] = None, project_id: Opti
     return out
 
 
-@app.get("/projects")
-def list_projects(user_id: str = "justin"):
-    """
-    Liest aus den Dateinamen alle vorhandenen project_id für einen user_id.
-    """
-    projects = set()
-    for f in UPLOAD_DIR.glob("*.wav"):
-        parts = f.name.split("__")
-        if len(parts) >= 2 and parts[0] == user_id:
-            projects.add(parts[1])
-    return {"user_id": user_id, "projects": sorted(projects)}
-
-
+# -----------------------
+# Simple player + PWA
+# -----------------------
 @app.get("/player", response_class=HTMLResponse)
 def player(user_id: str = "default_user", project_id: str = "default_project"):
     return f"""
@@ -412,13 +473,13 @@ async function fetchVersions() {{
   return await res.json();
 }}
 
-function renderProjects(list) {{
+function renderProjects(projects) {{
   projectSelect.innerHTML = "";
-  for (const pid of list) {{
+  for (const p of projects) {{
     const opt = document.createElement("option");
-    opt.value = pid;
-    opt.textContent = pid;
-    if (pid === PROJECT_ID) opt.selected = true;
+    opt.value = p.project_id;           // intern
+    opt.textContent = p.display_name;   // sichtbar
+    if (p.project_id === PROJECT_ID) opt.selected = true;
     projectSelect.appendChild(opt);
   }}
 }}
@@ -480,13 +541,13 @@ refreshBtn.onclick = refreshAll;
     const p = await fetchProjects();
     const list = (p.projects || []);
     if (list.length) {{
-      if (!list.includes(PROJECT_ID)) PROJECT_ID = list[0];
+      if (!list.some(x => x.project_id === PROJECT_ID)) PROJECT_ID = list[0].project_id;
       renderProjects(list);
     }} else {{
-      renderProjects([PROJECT_ID]);
+      renderProjects([{{ project_id: PROJECT_ID, display_name: PROJECT_ID }}]);
     }}
   }} catch (e) {{
-    renderProjects([PROJECT_ID]);
+    renderProjects([{{ project_id: PROJECT_ID, display_name: PROJECT_ID }}]);
   }}
 
   await refreshAll();
