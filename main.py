@@ -18,6 +18,31 @@ def health():
     return {"ok": True}
 
 
+# ---------- helpers ----------
+def _latest_any_wav() -> Path:
+    files = list(UPLOAD_DIR.glob("*.wav"))
+    if not files:
+        raise HTTPException(status_code=404, detail="No files uploaded yet")
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[0]
+
+
+def _matches_user_project(f: Path, user_id: str | None, project_id: str | None) -> bool:
+    if not user_id and not project_id:
+        return True
+
+    parts = f.name.split("__")
+    f_user = parts[0] if len(parts) > 0 else ""
+    f_project = parts[1] if len(parts) > 1 else ""
+
+    if user_id and f_user != user_id:
+        return False
+    if project_id and f_project != project_id:
+        return False
+    return True
+
+
+# ---------- endpoints ----------
 @app.post("/upload")
 async def upload(
     file: UploadFile = File(...),
@@ -35,7 +60,6 @@ async def upload(
     safe_name = f"{user_id}__{project_id}__{ts}__{file.filename}"
     dest = UPLOAD_DIR / safe_name
 
-    # stream to disk (better than file.read() for larger wavs)
     try:
         with dest.open("wb") as out:
             while True:
@@ -55,7 +79,10 @@ async def upload(
             "mode": mode,
             "display_name": display_name,
             "version_label": version_label,
-            "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(dest.stat().st_mtime)),
+            "created_at": time.strftime(
+                "%Y-%m-%d %H:%M:%S",
+                time.localtime(dest.stat().st_mtime),
+            ),
         }
     )
 
@@ -65,10 +92,6 @@ async def projects(
     user_id: str = Form(...),
     projects_json: str = Form(...),
 ):
-    """
-    Desktop sendet projects_json als stringified JSON.
-    Wir speichern pro user eine Datei.
-    """
     try:
         payload = json.loads(projects_json)
     except Exception:
@@ -83,20 +106,7 @@ async def projects(
 @app.get("/files")
 def list_files(user_id: str | None = None, project_id: str | None = None):
     files = list(UPLOAD_DIR.glob("*.wav"))
-
-    def matches(f: Path) -> bool:
-        if not user_id and not project_id:
-            return True
-        parts = f.name.split("__")
-        f_user = parts[0] if len(parts) > 0 else ""
-        f_project = parts[1] if len(parts) > 1 else ""
-        if user_id and f_user != user_id:
-            return False
-        if project_id and f_project != project_id:
-            return False
-        return True
-
-    files = [f for f in files if matches(f)]
+    files = [f for f in files if _matches_user_project(f, user_id, project_id)]
     files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
     return [
@@ -111,20 +121,7 @@ def list_files(user_id: str | None = None, project_id: str | None = None):
 @app.get("/latest")
 def latest_file(user_id: str | None = None, project_id: str | None = None):
     files = list(UPLOAD_DIR.glob("*.wav"))
-
-    def matches(f: Path) -> bool:
-        if not user_id and not project_id:
-            return True
-        parts = f.name.split("__")
-        f_user = parts[0] if len(parts) > 0 else ""
-        f_project = parts[1] if len(parts) > 1 else ""
-        if user_id and f_user != user_id:
-            return False
-        if project_id and f_project != project_id:
-            return False
-        return True
-
-    files = [f for f in files if matches(f)]
+    files = [f for f in files if _matches_user_project(f, user_id, project_id)]
     files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
     if not files:
@@ -134,33 +131,23 @@ def latest_file(user_id: str | None = None, project_id: str | None = None):
     return FileResponse(latest, media_type="audio/wav", filename=latest.name)
 
 
-@app.get("/player", response_class=HTMLResponse)
-def player(user_id: str = "default_user", project_id: str = "default_project"):
-    return f"""
-    <html>
-    <head><title>Mix Player</title></head>
-    <body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
-        <h2>Latest Mix for {user_id} / {project_id}</h2>
-        <audio controls style="width:90%">
-          <source src="/latest?user_id={user_id}&project_id={project_id}" type="audio/wav">
-        </audio>
-    </body>
-    </html>
-    """
+@app.get("/latest_any")
+def latest_any():
+    latest = _latest_any_wav()
+    return FileResponse(latest, media_type="audio/wav", filename=latest.name)
 
 
 @app.get("/", response_class=HTMLResponse)
 def root():
-    user_id = "justin"
-    project_id = "default"
-
-    return f"""
+    # plays latest uploaded wav globally (no params)
+    return """
     <html>
-    <head><title>Mix Player</title></head>
+    <head><title>MixRefresh</title></head>
     <body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
-        <h2>Latest Mix for {user_id} / {project_id}</h2>
+        <h2>Latest Upload</h2>
+        <p style="opacity:0.7">Plays the newest WAV found on the server</p>
         <audio controls style="width:90%">
-          <source src="/latest?user_id={user_id}&project_id={project_id}" type="audio/wav">
+          <source src="/latest_any" type="audio/wav">
         </audio>
     </body>
     </html>
