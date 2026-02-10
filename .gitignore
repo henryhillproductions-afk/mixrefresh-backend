@@ -1,0 +1,6 @@
+__pycache__/
+cloud_uploads/
+projects_store/
+.venv/
+.DS_Store
+*.pyc

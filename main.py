@@ -1,16 +1,32 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 import time
 import json
 
 app = FastAPI()
 
+# Enable CORS for local development
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 UPLOAD_DIR = Path("cloud_uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 PROJECTS_DIR = Path("projects_store")
 PROJECTS_DIR.mkdir(exist_ok=True)
+
+# Mount static files for the web app
+STATIC_DIR = Path("static")
+STATIC_DIR.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory="static", html=True), name="static")
 
 
 @app.get("/health")
@@ -103,6 +119,25 @@ async def projects(
     return {"ok": True, "user_id": user_id}
 
 
+@app.get("/projects")
+def list_projects(user_id: str | None = None):
+    # Simply list all .json files in PROJECTS_DIR
+    # In a real app, filtering by user_id would happen here
+    project_files = list(PROJECTS_DIR.glob("*.json"))
+    
+    results = []
+    for p in project_files:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            # If user_id is provided, only return matching projects? 
+            # For now, return all to keep it simple as requested
+            results.append(data)
+        except Exception:
+            pass
+            
+    return results
+
+
 @app.get("/files")
 def list_files(user_id: str | None = None, project_id: str | None = None):
     files = list(UPLOAD_DIR.glob("*.wav"))
@@ -129,6 +164,14 @@ def latest_file(user_id: str | None = None, project_id: str | None = None):
 
     latest = files[0]
     return FileResponse(latest, media_type="audio/wav", filename=latest.name)
+
+
+@app.get("/uploads/{filename}")
+def get_upload(filename: str):
+    file_path = UPLOAD_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(file_path)
 
 
 @app.get("/latest_any")

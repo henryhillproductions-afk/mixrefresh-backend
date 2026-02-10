@@ -1,0 +1,214 @@
+/* MixRefresh Web - Dark Theme */
+:root {
+    --bg-dark-1: #1c1c1c;
+    --bg-dark-2: #2d2d2d;
+    --accent: #49683e;
+    --text-main: #ffffff;
+    --text-dim: #aaaaaa;
+    --btn-bg: rgba(255, 255, 255, 0.1);
+    --btn-hover: rgba(255, 255, 255, 0.2);
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    font-family: 'Fira Code', 'Cascadia Code', monospace;
+    background: linear-gradient(135deg, var(--bg-dark-1), #686868);
+    color: var(--text-main);
+    display: grid;
+    grid-template-columns: 250px 1fr 300px; /* Sidebar, Main, Notes */
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* Sidebar */
+#sidebar {
+    background: rgba(0, 0, 0, 0.3);
+    border-right: 1px solid rgba(255, 255, 255, 0.1);
+    display: flex;
+    flex-direction: column;
+    padding: 20px;
+}
+
+.sidebar-header h2 {
+    margin: 0 0 20px 0;
+    font-size: 1.2rem;
+    opacity: 0.8;
+}
+
+.projects-list, .versions-list {
+    flex: 1;
+    overflow-y: auto;
+}
+
+.project-item, .version-item {
+    padding: 10px;
+    margin-bottom: 5px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.project-item:hover, .version-item:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.active {
+    background: var(--accent) !important;
+}
+
+button {
+    background: var(--btn-bg);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: white;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.2s;
+}
+
+button:hover {
+    background: var(--btn-hover);
+}
+
+.hidden {
+    display: none !important;
+}
+
+/* Main Content */
+#main-content {
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    background: rgba(0,0,0,0.2);
+}
+
+#top-bar {
+    padding: 20px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+#top-bar h1 {
+    margin: 0;
+    font-size: 1.5rem;
+    font-weight: 500;
+}
+
+#player-center {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center; /* Vertical center */
+    align-items: center;     /* Horizontal center */
+    padding: 40px;
+}
+
+#waveform-container {
+    width: 100%;
+    height: 150px;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 12px;
+    position: relative;
+    margin-bottom: 30px;
+    overflow: hidden;
+}
+
+#waveform-canvas {
+    width: 100%;
+    height: 100%;
+    cursor: crosshair;
+}
+
+#waveform-loading {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+/* Controls */
+#controls-area {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+}
+
+.playback-controls {
+    display: flex;
+    gap: 15px;
+}
+
+.control-btn.big {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    font-size: 1.5rem;
+    background: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.control-btn.big:hover {
+    background: rgba(255, 255, 255, 0.25);
+    transform: scale(1.05);
+}
+
+.presets-area {
+    display: flex;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+.preset-btn {
+    border-radius: 20px;
+    font-size: 0.9rem;
+    padding: 8px 20px;
+}
+
+.preset-btn.active {
+    background: #ff9500; /* Orange global accent for radio */
+    color: white;
+    border: none;
+}
+
+.disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+/* Notes Panel */
+#notes-panel {
+    background: rgba(0, 0, 0, 0.3);
+    border-left: 1px solid rgba(255, 255, 255, 0.1);
+    display: flex;
+    flex-direction: column;
+    padding: 20px;
+}
+
+.notes-header h3 {
+    margin: 0 0 15px 0;
+    font-weight: 500;
+}
+
+#notes-input {
+    flex: 1;
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    color: var(--text-main);
+    padding: 15px;
+    font-family: inherit;
+    resize: none;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+#notes-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: rgba(0, 0, 0, 0.3);
+}

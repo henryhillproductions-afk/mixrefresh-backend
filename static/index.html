@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MixRefresh Cloud</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Google Fonts: Cascadia Code for that dev feel -->
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <!-- Sidebar -->
+    <div id="sidebar">
+        <div class="sidebar-header">
+            <h2>MixRefresh</h2>
+        </div>
+        
+        <div class="projects-list" id="projects-list">
+            <!-- Projects injected via JS -->
+            <div class="loading">Lade Projekte...</div>
+        </div>
+        
+        <div class="versions-list hidden" id="versions-list">
+            <button id="btn-back-projects">← Projekte</button>
+            <h3 id="current-project-name">Projekt</h3>
+            <div id="versions-container">
+                <!-- Versions injected via JS -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div id="main-content">
+        <!-- Header -->
+        <div id="top-bar">
+            <h1>Cloud Player</h1>
+        </div>
+
+        <!-- Player Center -->
+        <div id="player-center">
+            
+            <div id="waveform-container">
+                <!-- Waveform canvas -->
+                <canvas id="waveform-canvas"></canvas>
+                <div id="waveform-loading">Lade Audio...</div>
+            </div>
+
+            <div id="controls-area">
+                <div class="playback-controls">
+                    <button id="btn-play" class="control-btn big">▶</button>
+                    <button id="btn-stop" class="control-btn">■</button>
+                </div>
+                
+                <div class="presets-area">
+                    <button id="btn-radio" class="preset-btn">Radio</button>
+                    <!-- other presets placeholders -->
+                    <button class="preset-btn disabled">Festival</button>
+                    <button class="preset-btn disabled">Bass Boost</button>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- Notes Panel (Right) -->
+    <div id="notes-panel">
+        <div class="notes-header">
+            <h3>Notizen</h3>
+        </div>
+        <textarea id="notes-input" placeholder="Notizen hier eingeben..."></textarea>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
