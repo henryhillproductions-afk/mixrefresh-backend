@@ -181,6 +181,22 @@ def get_upload(filename: str):
     return FileResponse(file_path)
 
 
+@app.delete("/files/{filename}")
+def delete_file(filename: str):
+    """
+    Deletes a file from the server.
+    """
+    file_path = UPLOAD_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    try:
+        file_path.unlink()
+        return {"ok": True, "deleted": filename}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete file: {e}")
+
+
 @app.get("/latest_any")
 def latest_any():
     latest = _latest_any_wav()
