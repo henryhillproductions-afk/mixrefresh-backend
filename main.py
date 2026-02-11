@@ -72,8 +72,13 @@ async def upload(
     display_name: str = Form(""),
     version_label: str = Form(""),
 ):
-    ts = time.strftime("%Y-%m-%d_%H-%M-%S")
-    safe_name = f"{user_id}__{project_id}__{ts}__{file.filename}"
+    # ts = time.strftime("%Y-%m-%d_%H-%M-%S")
+    # safe_name = f"{user_id}__{project_id}__{ts}__{file.filename}"
+    
+    # [CHANGE] User wants deterministic filenames to allow overwriting duplicates
+    # We trust the client to send a unique enough filename if they want different versions.
+    # We still prepend user_id__project_id to avoid collisions between users/projects.
+    safe_name = f"{user_id}__{project_id}__{file.filename}"
     dest = UPLOAD_DIR / safe_name
 
     try:
@@ -129,9 +134,11 @@ def list_projects(user_id: str | None = None):
     for p in project_files:
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
-            # If user_id is provided, only return matching projects? 
-            # For now, return all to keep it simple as requested
-            results.append(data)
+            # Flatten: if file contains a list, extend results
+            if isinstance(data, list):
+                results.extend(data)
+            else:
+                results.append(data)
         except Exception:
             pass
             
