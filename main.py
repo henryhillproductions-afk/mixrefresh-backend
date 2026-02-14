@@ -124,6 +124,53 @@ async def projects(
     return {"ok": True, "user_id": user_id}
 
 
+@app.post("/project/update")
+async def update_project(
+    user_id: str = Form(...),
+    project_json: str = Form(...),
+):
+    """
+    Update or add a SINGLE project to the user's projects list.
+    Avoids overwriting the entire list with potentially stale data if the client
+    doesn't have the full up-to-date list.
+    """
+    try:
+        new_project_data = json.loads(project_json)
+        # minimal validation
+        if "project_id" not in new_project_data:
+             raise ValueError("Missing project_id")
+    except Exception:
+        raise HTTPException(status_code=400, detail="project_json is not valid JSON or missing project_id")
+
+    dest = PROJECTS_DIR / f"{user_id}.json"
+    
+    # Load existing
+    current_projects = []
+    if dest.exists():
+        try:
+             current_projects = json.loads(dest.read_text(encoding="utf-8"))
+             if not isinstance(current_projects, list):
+                 current_projects = []
+        except Exception:
+            current_projects = []
+            
+    # Merge/Upsert
+    updated = False
+    for i, p in enumerate(current_projects):
+        if p.get("project_id") == new_project_data["project_id"]:
+            current_projects[i] = new_project_data
+            updated = True
+            break
+    
+    if not updated:
+        current_projects.append(new_project_data)
+
+    # Save
+    dest.write_text(json.dumps(current_projects, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return {"ok": True, "user_id": user_id, "project_id": new_project_data["project_id"]}
+
+
 @app.get("/projects")
 def list_projects(user_id: str | None = None):
     # Simply list all .json files in PROJECTS_DIR
